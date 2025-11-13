@@ -7,7 +7,7 @@ use super::{DynamicSequenceElementMut, Proxy, ProxyMut, ProxySequence, Value, Va
 /// A view of a single message. Used for nested messages.
 ///
 /// This allows reading the fields of the message, but not modifying them.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct DynamicMessageView<'msg> {
     pub(crate) structure: &'msg MessageStructure,
     pub(crate) storage: &'msg [u8],
