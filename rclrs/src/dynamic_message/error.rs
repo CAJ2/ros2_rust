@@ -20,6 +20,18 @@ pub enum DynamicMessageError {
     MessageTypeMismatch,
     /// Loading the type support library failed.
     LibraryLoadingError(libloading::Error),
+    #[cfg(feature = "serde")]
+    /// An error related to serializing or deserializing a dynamic message.
+    SerdeMessage(String),
+    #[cfg(feature = "serde")]
+    /// A type is not supported for serde serialization/deserialization.
+    TypeNotSupported(String),
+    #[cfg(feature = "serde")]
+    /// The UTF-8 encoding is invalid.
+    InvalidUtf8Encoding,
+    #[cfg(feature = "serde")]
+    /// There was a message structure problem, likely a bug.
+    InvalidEncapsulation,
 }
 
 impl fmt::Display for DynamicMessageError {
@@ -39,6 +51,14 @@ impl fmt::Display for DynamicMessageError {
                 "The operation expected a dynamic message of a different type"
             ),
             Self::LibraryLoadingError(_) => write!(f, "Loading the type support library failed"),
+            #[cfg(feature = "serde")]
+            Self::SerdeMessage(msg) => write!(f, "Dynamic message serde error: {}", msg),
+            #[cfg(feature = "serde")]
+            Self::TypeNotSupported(ty) => write!(f, "Type not supported for serde: {}", ty),
+            #[cfg(feature = "serde")]
+            Self::InvalidUtf8Encoding => write!(f, "The UTF-8 encoding is invalid"),
+            #[cfg(feature = "serde")]
+            Self::InvalidEncapsulation => write!(f, "Invalid message encapsulation"),
         }
     }
 }
