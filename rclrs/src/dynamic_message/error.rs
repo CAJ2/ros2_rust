@@ -29,6 +29,9 @@ pub enum DynamicMessageError {
     #[cfg(feature = "serde")]
     /// The UTF-8 encoding is invalid.
     InvalidUtf8Encoding,
+    #[cfg(feature = "serde")]
+    /// There was a message structure problem, likely a bug.
+    InvalidEncapsulation,
 }
 
 impl fmt::Display for DynamicMessageError {
@@ -54,6 +57,8 @@ impl fmt::Display for DynamicMessageError {
             Self::TypeNotSupported(ty) => write!(f, "Type not supported for serde: {}", ty),
             #[cfg(feature = "serde")]
             Self::InvalidUtf8Encoding => write!(f, "The UTF-8 encoding is invalid"),
+            #[cfg(feature = "serde")]
+            Self::InvalidEncapsulation => write!(f, "Invalid message encapsulation"),
         }
     }
 }

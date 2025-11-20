@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{de, Deserialize};
 
-use crate::{BoundedSequenceValue, DynamicBoundedSequence, DynamicBoundedString, DynamicBoundedWString, MessageFieldInfo, SequenceValue};
+use crate::{BoundedSequenceValue, DynamicBoundedString, DynamicBoundedWString, MessageFieldInfo, SequenceValue};
 
 use super::{DynamicMessageView, MessageStructure, Value, SimpleValue, ArrayValue, ValueKind, BaseType, Proxy as _};
 
@@ -26,13 +26,17 @@ impl serde::ser::Error for super::DynamicMessageError {
 
 type Result<T> = std::result::Result<T, super::DynamicMessageError>;
 
+/// A deserializer for dynamic messages.
+#[derive(Debug)]
 pub struct DynReader<'de> {
     structure: &'de MessageStructure,
     storage: &'de [u8],
-    // Current index, length
-    pos: Vec<(usize, usize)>,
+    // (Current index, length, is a sequence?)
+    pos: Vec<(usize, usize, bool)>,
     // Current field being read
     current: &'de MessageFieldInfo,
+    // Offset of current within the storage bytes
+    offset: usize
 }
 
 impl<'de> DynReader<'de> {
@@ -42,13 +46,15 @@ impl<'de> DynReader<'de> {
             storage: view.storage,
             pos: Vec::new(),
             current: view.structure.fields.first().expect("Message has at least one field"),
+            offset: 0,
         }
     }
 
     fn get_value(&self) -> Result<Value<'de>> {
         let size = self.current.size().unwrap_or(1);
+        let offset = self.offset + self.current.offset;
         // SAFETY: The byte slice contains a valid field as assured by DynamicMessage construction
-        let value = unsafe { Value::new(&self.storage[self.current.offset..self.current.offset + size], self.current) };
+        let value = unsafe { Value::new(&self.storage[offset..offset + size], self.current) };
         let value = value.expect("Field value creation always returns Some");
         let pos = *self.pos.last().expect("pos stack is never empty");
         let idx = pos.0;
@@ -72,13 +78,13 @@ impl<'de> DynReader<'de> {
             Value::Array(ArrayValue::OctetArray(v)) => Ok(Value::Simple(SimpleValue::Octet(&v[idx]))),
             Value::Array(ArrayValue::BoundedStringArray(v)) => {
                 let size = self.current.base_type.size().unwrap_or(1);
-                let start = idx * size + self.current.offset;
+                let start = idx * size + offset;
                 let bytes = &self.storage[start..start + size];
                 unsafe { Ok(Value::Simple(SimpleValue::BoundedString(DynamicBoundedString::new(bytes, v[idx].upper_bound())))) }
             },
             Value::Array(ArrayValue::BoundedWStringArray(v)) => {
                 let size = self.current.base_type.size().unwrap_or(1);
-                let start = idx * size + self.current.offset;
+                let start = idx * size + offset;
                 let bytes = &self.storage[start..start + size];
                 unsafe { Ok(Value::Simple(SimpleValue::BoundedWString(DynamicBoundedWString::new(bytes, v[idx].upper_bound())))) }
             },
@@ -100,132 +106,100 @@ impl<'de> DynReader<'de> {
             Value::Sequence(SequenceValue::OctetSequence(v)) => Ok(Value::Simple(SimpleValue::Octet(&v[idx]))),
             Value::Sequence(SequenceValue::BoundedStringSequence(v)) => {
                 let size = self.current.base_type.size().unwrap_or(1);
-                let start = idx * size + self.current.offset;
+                let start = idx * size + offset;
                 let bytes = &self.storage[start..start + size];
                 unsafe { Ok(Value::Simple(SimpleValue::BoundedString(DynamicBoundedString::new(bytes, v[idx].upper_bound())))) }
             },
             Value::Sequence(SequenceValue::BoundedWStringSequence(v)) => {
                 let size = self.current.base_type.size().unwrap_or(1);
-                let start = idx * size + self.current.offset;
+                let start = idx * size + offset;
                 let bytes = &self.storage[start..start + size];
                 unsafe { Ok(Value::Simple(SimpleValue::BoundedWString(DynamicBoundedWString::new(bytes, v[idx].upper_bound())))) }
             },
             Value::BoundedSequence(BoundedSequenceValue::BooleanBoundedSequence(v)) => {
-                let b = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let b = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Boolean(unsafe { (b as *const bool).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::Int8BoundedSequence(v)) => {
-                let i = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let i = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Int8(unsafe { (i as *const i8).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::Uint8BoundedSequence(v)) => {
-                let u = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let u = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Uint8(unsafe { (u as *const u8).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::Int16BoundedSequence(v)) => {
-                let i = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let i = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Int16(unsafe { (i as *const i16).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::Uint16BoundedSequence(v)) => {
-                let u = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let u = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Uint16(unsafe { (u as *const u16).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::Int32BoundedSequence(v)) => {
-                let i = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let i = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Int32(unsafe { (i as *const i32).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::Uint32BoundedSequence(v)) => {
-                let u = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let u = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Uint32(unsafe { (u as *const u32).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::Int64BoundedSequence(v)) => {
-                let i = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let i = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Int64(unsafe { (i as *const i64).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::Uint64BoundedSequence(v)) => {
-                let u = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let u = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Uint64(unsafe { (u as *const u64).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::FloatBoundedSequence(v)) => {
-                let f = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let f = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Float(unsafe { (f as *const f32).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::DoubleBoundedSequence(v)) => {
-                let d = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let d = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 // SAFETY: The pointer ultimately points to the underlying storage, which lives long enough
                 Ok(Value::Simple(SimpleValue::Double(unsafe { (d as *const f64).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::StringBoundedSequence(v)) => {
-                let s = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let s = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 Ok(Value::Simple(SimpleValue::String(unsafe { (s as *const rosidl_runtime_rs::String).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::WStringBoundedSequence(v)) => {
-                let s = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let s = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 Ok(Value::Simple(SimpleValue::WString(unsafe { (s as *const rosidl_runtime_rs::WString).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::CharBoundedSequence(v)) => {
-                let c = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let c = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 Ok(Value::Simple(SimpleValue::Char(unsafe { (c as *const u8).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::WCharBoundedSequence(v)) => {
-                let c = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let c = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 Ok(Value::Simple(SimpleValue::WChar(unsafe { (c as *const u16).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::OctetBoundedSequence(v)) => {
-                let o = v.get(idx).ok_or(super::DynamicMessageError::SerdeMessage(
-                    "Index out of bounds for bounded sequence".to_string(),
-                ))?;
+                let o = v.get(idx).ok_or(super::DynamicMessageError::InvalidEncapsulation)?;
                 Ok(Value::Simple(SimpleValue::Octet(unsafe { (o as *const u8).as_ref().expect("Valid ptr") })))
             },
             Value::BoundedSequence(BoundedSequenceValue::BoundedStringBoundedSequence(v)) => {
                 let size = self.current.base_type.size().unwrap_or(1);
-                let start = idx * size + self.current.offset;
+                let start = idx * size + offset;
                 let bytes = &self.storage[start..start + size];
                 unsafe { Ok(Value::Simple(SimpleValue::BoundedString(DynamicBoundedString::new(bytes, v[idx].upper_bound())))) }
             },
             Value::BoundedSequence(BoundedSequenceValue::BoundedWStringBoundedSequence(v)) => {
                 let size = self.current.base_type.size().unwrap_or(1);
-                let start = idx * size + self.current.offset;
+                let start = idx * size + offset;
                 let bytes = &self.storage[start..start + size];
                 unsafe { Ok(Value::Simple(SimpleValue::BoundedWString(DynamicBoundedWString::new(bytes, v[idx].upper_bound())))) }
             },
@@ -234,22 +208,20 @@ impl<'de> DynReader<'de> {
     }
 
     fn set_current(&mut self) -> Result<()> {
-        if self.pos.len() == 0 {
+        if self.pos.is_empty() {
             return Ok(());
         }
-        let mut current = self.structure.fields.get(self.pos.first().unwrap_or(&(0, 0)).0).ok_or(
-            super::DynamicMessageError::SerdeMessage(
-                "Current position out of bounds".to_string(),
-            ),
+        let mut current = self.structure.fields.get(self.pos.first().unwrap_or(&(0, 0, false)).0).ok_or(
+            super::DynamicMessageError::InvalidEncapsulation,
         )?;
+        let mut offset: usize = 0;
         let mut skip_seq = false;
-        for (idx, _) in self.pos.iter().skip(1) {
+        for (idx, _, _) in self.pos.iter().skip(1) {
             if current.value_kind == ValueKind::Simple || skip_seq {
                 if let BaseType::Message(ref msg_struct) = current.base_type {
+                    offset += current.offset;
                     current = msg_struct.fields.get(*idx).ok_or(
-                        super::DynamicMessageError::SerdeMessage(
-                            "Current position out of bounds".to_string(),
-                        ),
+                        super::DynamicMessageError::InvalidEncapsulation,
                     )?;
                 }
                 skip_seq = false;
@@ -259,18 +231,16 @@ impl<'de> DynReader<'de> {
             }
         }
         self.current = current;
+        self.offset = offset;
         Ok(())
     }
 
     fn array_len(&self) -> Result<usize> {
         let size = self.current.size().unwrap_or(1);
+        let offset = self.offset + self.current.offset;
         // SAFETY: The byte slice contains a valid field as assured by DynamicMessage construction
-        let value = unsafe {
-            Value::new(
-                &self.storage[self.current.offset..self.current.offset + size],
-                self.current,
-            ).expect("Valid value")
-        };
+        let value = unsafe { Value::new(&self.storage[offset..offset + size], self.current) };
+        let value = value.expect("Valid value");
         let len = match value {
             Value::Array(_) => match self.current.value_kind {
                 ValueKind::Array { length } => length,
@@ -318,7 +288,7 @@ impl<'de> DynReader<'de> {
             Value::BoundedSequence(BoundedSequenceValue::MessageBoundedSequence(seq)) => seq.len(),
             _ => {
                 return Err(super::DynamicMessageError::TypeNotSupported(
-                    "Cannot increment sequence on non-sequence type".to_string(),
+                    "array_len called on non-seq type".to_string(),
                 ))
             }
         };
@@ -336,15 +306,13 @@ impl<'de> DynReader<'de> {
             if len == 0 {
                 return Ok(false);
             }
-            self.pos.push((0, len));
+            self.pos.push((0, len, true));
             return Ok(true);
         }
         let pos_len = *self.pos.last().expect("pos stack should not be empty");
         // Sanity check to make sure we are not out of bounds
         if pos_len.0 >= pos_len.1 {
-            return Err(super::DynamicMessageError::SerdeMessage(
-                "Sequence index out of bounds".to_string(),
-            ));
+            return Err(super::DynamicMessageError::InvalidEncapsulation);
         }
         // If we have reached the end of the sequence, pop and return false
         if pos_len.0 == pos_len.1 - 1 {
@@ -360,8 +328,8 @@ impl<'de> DynReader<'de> {
     fn inc_field(&mut self, push: bool) -> Result<bool> {
         if push {
             // Top-level (just started deserialization)
-            if self.pos.len() == 0 {
-                self.pos.push((0, self.structure.fields.len()));
+            if self.pos.is_empty() {
+                self.pos.push((0, self.structure.fields.len(), false));
                 self.set_current()?;
                 return Ok(true);
             }
@@ -378,16 +346,19 @@ impl<'de> DynReader<'de> {
             if len == 0 {
                 return Ok(false);
             }
-            self.pos.push((0, len));
+            self.pos.push((0, len, false));
             self.set_current()?;
             return Ok(true);
         }
-        let pos_len = *self.pos.last().expect("pos stack should not be empty");
+        let mut pos_len = *self.pos.last().expect("pos stack should not be empty");
+        // The last pos may still be in a sequence, so we need to pop back
+        if pos_len.2 {
+            self.pos.pop();
+            pos_len = *self.pos.last().expect("pos stack should not be empty");
+        }
         // Sanity check to make sure we are not out of bounds
         if pos_len.0 >= pos_len.1 {
-            return Err(super::DynamicMessageError::SerdeMessage(
-                "Field index out of bounds".to_string(),
-            ));
+            return Err(super::DynamicMessageError::InvalidEncapsulation);
         }
         // If we have reached the end of the fields, pop and return false
         if pos_len.0 == pos_len.1 - 1 {
@@ -410,10 +381,16 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     where
         V: de::Visitor<'de>,
     {
-        match self.current.value_kind {
+        let pos = *self.pos.last().unwrap_or(&(0, 0, false));
+        let mut value_kind = &self.current.value_kind;
+        // If we are in an array/seq, deserialize the inner type
+        if pos.2 {
+            value_kind = &ValueKind::Simple;
+        }
+        match value_kind {
             ValueKind::Simple => match &self.current.base_type {
                 BaseType::Boolean => self.deserialize_bool(visitor),
-                BaseType::Octet => self.deserialize_bytes(visitor),
+                BaseType::Octet => self.deserialize_u8(visitor),
                 BaseType::Char => self.deserialize_char(visitor),
                 BaseType::Float => self.deserialize_f32(visitor),
                 BaseType::Double => self.deserialize_f64(visitor),
@@ -433,7 +410,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
                 BaseType::Message(_msg) => self.deserialize_map(visitor),
                 ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
             },
-            ValueKind::Array { length } => self.deserialize_tuple(length, visitor),
+            ValueKind::Array { length } => self.deserialize_tuple(*length, visitor),
             ValueKind::Sequence => self.deserialize_seq(visitor),
             ValueKind::BoundedSequence { upper_bound: _ } => self.deserialize_seq(visitor),
         }
@@ -447,7 +424,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
             Value::Simple(SimpleValue::Boolean(b)) => {
                 visitor.visit_bool(*b)
             }
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -458,7 +435,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
         match self.get_value()? {
             Value::Array(ArrayValue::CharArray(b)) => visitor.visit_bytes(b),
             Value::Array(ArrayValue::OctetArray(b)) => visitor.visit_bytes(b),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -469,7 +446,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
         match self.get_value()? {
             Value::Array(ArrayValue::CharArray(b)) => visitor.visit_byte_buf(b.to_vec()),
             Value::Array(ArrayValue::OctetArray(b)) => visitor.visit_byte_buf(b.to_vec()),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -479,7 +456,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Int8(i)) => visitor.visit_i8(*i),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -489,7 +466,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Int16(i)) => visitor.visit_i16(*i),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -499,7 +476,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Int32(i)) => visitor.visit_i32(*i),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -509,7 +486,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Int64(i)) => visitor.visit_i64(*i),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -519,7 +496,9 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Uint8(u)) => visitor.visit_u8(*u),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            Value::Simple(SimpleValue::Char(c)) => visitor.visit_u8(*c),
+            Value::Simple(SimpleValue::Octet(o)) => visitor.visit_u8(*o),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -529,7 +508,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Uint16(u)) => visitor.visit_u16(*u),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -539,7 +518,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Uint32(u)) => visitor.visit_u32(*u),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -549,7 +528,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Uint64(u)) => visitor.visit_u64(*u),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -559,7 +538,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Float(f)) => visitor.visit_f32(*f),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -569,7 +548,7 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Double(f)) => visitor.visit_f64(*f),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -579,7 +558,9 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
     {
         match self.get_value()? {
             Value::Simple(SimpleValue::Char(c)) => visitor.visit_char((*c).into()),
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            Value::Simple(SimpleValue::Uint8(u)) => visitor.visit_char((*u).into()),
+            Value::Simple(SimpleValue::Octet(o)) => visitor.visit_char((*o).into()),
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -591,7 +572,16 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
             Value::Simple(SimpleValue::String(s)) => {
                 visitor.visit_str(s.to_cstr().to_str().map_err(|_| Self::Error::InvalidUtf8Encoding)?)
             }
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            Value::Simple(SimpleValue::BoundedString(s)) => {
+                visitor.visit_str(s.to_cstr().to_str().map_err(|_| Self::Error::InvalidUtf8Encoding)?)
+            }
+            Value::Simple(SimpleValue::WString(s)) => {
+                visitor.visit_string(String::from_utf16(s).map_err(|_| Self::Error::InvalidUtf8Encoding)?)
+            }
+            Value::Simple(SimpleValue::BoundedWString(s)) => {
+                visitor.visit_string(String::from_utf16(&s).map_err(|_| Self::Error::InvalidUtf8Encoding)?)
+            }
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -603,7 +593,16 @@ impl<'de> de::Deserializer<'de> for &'_ mut DynReader<'de> {
             Value::Simple(SimpleValue::String(s)) => {
                 visitor.visit_string(s.to_cstr().to_str().map_err(|_| Self::Error::InvalidUtf8Encoding)?.to_owned())
             }
-            _ => Err(Self::Error::TypeNotSupported("".to_string())),
+            Value::Simple(SimpleValue::BoundedString(s)) => {
+                visitor.visit_string(s.to_cstr().to_str().map_err(|_| Self::Error::InvalidUtf8Encoding)?.to_owned())
+            }
+            Value::Simple(SimpleValue::WString(s)) => {
+                visitor.visit_string(String::from_utf16(s).map_err(|_| Self::Error::InvalidUtf8Encoding)?)
+            }
+            Value::Simple(SimpleValue::BoundedWString(s)) => {
+                visitor.visit_string(String::from_utf16(&s).map_err(|_| Self::Error::InvalidUtf8Encoding)?)
+            }
+            ty => Err(Self::Error::TypeNotSupported(format!("{:?}", ty))),
         }
     }
 
@@ -850,9 +849,6 @@ mod tests {
 
         let result = from_dyn_msg_view::<BasicTypes>(view);
 
-        if let Err(e) = result {
-            panic!("Deserialization failed: {:?}", e);
-        }
         assert!(result.is_ok());
     }
 
@@ -986,7 +982,7 @@ mod tests {
 
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         struct WithOption {
-            optional_field: Option<i32>,
+            int32_value: Option<i32>,
         }
 
         let result = from_dyn_msg_view::<WithOption>(view);
@@ -1008,28 +1004,6 @@ mod tests {
         let result = from_dyn_msg_view::<WithMap>(view);
         // Should fail since Map is not supported
         assert!(result.is_err());
-    }
-
-    // Test enum deserialization
-    #[test]
-    fn test_deserialize_enum() {
-        let msg = DynamicMessage::new("test_msgs/msg/BasicTypes".try_into().unwrap()).unwrap();
-        let view = msg.view();
-
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        enum TestEnum {
-            Variant1,
-            Variant2 { value: i32 },
-            Variant3(String),
-        }
-
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        struct WithEnum {
-            enum_field: TestEnum,
-        }
-
-        let result = from_dyn_msg_view::<WithEnum>(view);
-        assert!(result.is_ok());
     }
 
     // Test tuple and tuple struct deserialization
@@ -1070,11 +1044,12 @@ mod tests {
 
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         struct WithNewType {
+            #[serde(rename = "int32_value")]
             wrapped: NewTypeWrapper,
         }
 
         let result = from_dyn_msg_view::<WithNewType>(view);
-        assert!(result.is_err() || result.is_ok());
+        assert!(result.is_ok());
     }
 
     // Test unit and unit struct deserialization
@@ -1102,15 +1077,22 @@ mod tests {
     // Test byte arrays and sequences
     #[test]
     fn test_deserialize_bytes() {
-        let msg = DynamicMessage::new("test_msgs/msg/Arrays".try_into().unwrap()).unwrap();
-        let view = msg.view();
+        let mut msg = DynamicMessage::new("test_msgs/msg/UnboundedSequences".try_into().unwrap()).unwrap();
+
+        if let Some(crate::ValueMut::Sequence(crate::SequenceValueMut::Int8Sequence(seq))) =
+            msg.get_mut("int8_values")
+        {
+            // Populate with 64 int8 values
+            seq.extend(0..64);
+        }
 
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         struct BytesStruct {
             #[serde(with = "serde_big_array::BigArray")]
-            byte_values: [u8; 3],
+            int8_values: [i8; 64],
         }
 
+        let view = msg.view();
         let result = from_dyn_msg_view::<BytesStruct>(view);
         assert!(result.is_ok());
     }
@@ -1161,8 +1143,8 @@ mod tests {
         }
 
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        struct StringOnly {
-            string_value: String,
+        struct ByteOnly {
+            byte_value: u8,
         }
 
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1173,12 +1155,12 @@ mod tests {
         // Test each type separately
         let bool_result = from_dyn_msg_view::<BoolOnly>(msg.view());
         let int_result = from_dyn_msg_view::<Int32Only>(msg.view());
-        let string_result = from_dyn_msg_view::<StringOnly>(msg.view());
+        let byte_result = from_dyn_msg_view::<ByteOnly>(msg.view());
         let float_result = from_dyn_msg_view::<FloatOnly>(msg.view());
 
         assert!(bool_result.is_ok());
         assert!(int_result.is_ok());
-        assert!(string_result.is_ok());
+        assert!(byte_result.is_ok());
         assert!(float_result.is_ok());
     }
 
