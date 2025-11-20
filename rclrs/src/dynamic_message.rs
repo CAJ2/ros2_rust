@@ -24,11 +24,14 @@ mod dynamic_subscription;
 mod error;
 mod field_access;
 mod message_structure;
+mod serde;
 pub use dynamic_publisher::*;
 pub use dynamic_subscription::*;
 pub use error::*;
 pub use field_access::*;
 pub use message_structure::*;
+#[cfg(all(feature = "serde", feature = "dyn_msg"))]
+pub use serde::*;
 
 /// A struct to cache loaded shared libraries for dynamic messages, indexing them by name.
 #[derive(Default)]
